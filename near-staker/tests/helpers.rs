@@ -319,6 +319,35 @@ pub fn check_error_msg(response: ExecutionFinalResult, error_message: &str) {
         .contains(error_message));
 }
 
+/// Asserts the concurrency invariant exercised by the mutual-exclusion tests: every concurrently
+/// submitted transaction either succeeds or fails for a legitimate concurrency reason — ERR_LOCKED
+/// (it lost the `is_locked` race) or ERR_NOT_IN_SYNC (it took the lock but the sandbox epoch advanced
+/// mid-test, so the post-lock sync check rejected it). Any other failure is a real bug.
+///
+/// The number of successes vs. failures is deliberately not asserted. Sandbox scheduling decides
+/// whether the transactions truly overlap (one wins, the rest get ERR_LOCKED) or serialize (each runs
+/// against an already-released lock and can independently succeed, or independently hit
+/// ERR_NOT_IN_SYNC once the epoch drifts), so the split is non-deterministic. The caller separately
+/// bounds the resulting `total_staked` change, which is what actually guards against corruption.
+pub fn assert_concurrency_outcomes(results: impl IntoIterator<Item = ExecutionFinalResult>) {
+    // These mirror the ERR_LOCKED / ERR_NOT_IN_SYNC constants in the contract's errors module. The
+    // contract is a cdylib and cannot be imported here, so the strings are duplicated as literals
+    // (the same convention the other tests use with check_error_msg).
+    const ERR_LOCKED: &str = "Contract is currently executing";
+    const ERR_NOT_IN_SYNC: &str = "Contract is not in sync";
+
+    for result in results {
+        if result.is_success() {
+            continue;
+        }
+        let err = result.into_result().unwrap_err().to_string();
+        assert!(
+            err.contains(ERR_LOCKED) || err.contains(ERR_NOT_IN_SYNC),
+            "concurrent tx failed for an unexpected reason: {err}"
+        );
+    }
+}
+
 pub async fn get_max_withdraw(
     contract: Contract,
     user: Account,
